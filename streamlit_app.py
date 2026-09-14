@@ -317,13 +317,10 @@ if st.button(
 # ============================================================
 # FOOTER
 # ============================================================
-
-st.markdown("---")
-
 st.caption(
     "Data: Open-Meteo Air Quality and Weather APIs. "
     "Air-quality data are based on atmospheric-composition "
     "forecasts and may differ from ground-station observations. "
     "See README/PRD for limitations and attribution."
-            )
-    
+)
+
