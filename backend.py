@@ -24,7 +24,7 @@ CITIES = {
 
 
 # ============================================================
-# API URLS
+# OPEN-METEO API URLS
 # ============================================================
 
 AQ_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
@@ -33,7 +33,7 @@ WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
 
 
 # ============================================================
-# AQI CATEGORY
+# AQI LABEL
 # ============================================================
 
 def aqi_label(value):
@@ -66,25 +66,37 @@ def aqi_label(value):
 
 
 # ============================================================
-# FETCH CITY POLLUTION + WEATHER
+# FETCH CITY DATA
 # ============================================================
 
 def fetch_city(city):
 
     if city not in CITIES:
-        raise ValueError(f"Unknown city: {city}")
+        raise ValueError(
+            f"Unknown city: {city}"
+        )
 
     latitude, longitude = CITIES[city]
 
     # --------------------------------------------------------
-    # AIR QUALITY
+    # AIR QUALITY API
     # --------------------------------------------------------
 
     air_params = {
         "latitude": latitude,
         "longitude": longitude,
-        "current": "pm2_5,pm10,us_aqi,european_aqi",
-        "hourly": "pm2_5,pm10,us_aqi,european_aqi",
+        "current": (
+            "pm2_5,"
+            "pm10,"
+            "us_aqi,"
+            "european_aqi"
+        ),
+        "hourly": (
+            "pm2_5,"
+            "pm10,"
+            "us_aqi,"
+            "european_aqi"
+        ),
         "forecast_days": 2,
         "timezone": "auto",
     }
@@ -108,7 +120,7 @@ def fetch_city(city):
         ) from exc
 
     # --------------------------------------------------------
-    # WEATHER
+    # WEATHER API
     # --------------------------------------------------------
 
     weather_params = {
@@ -144,7 +156,10 @@ def fetch_city(city):
     # CURRENT DATA
     # --------------------------------------------------------
 
-    current = air_data.get("current", {})
+    current = air_data.get(
+        "current",
+        {}
+    )
 
     weather_current = weather_data.get(
         "current",
@@ -190,7 +205,7 @@ def fetch_city(city):
     )
 
     # --------------------------------------------------------
-    # RETURN CITY DATA
+    # RETURN DATA
     # --------------------------------------------------------
 
     return {
@@ -299,13 +314,12 @@ def compare_cities(cities):
 
 
 # ============================================================
-# PREPARE DATA FOR GEMINI
+# PREPARE GEMINI DATA
 # ============================================================
 
 def _prepare_gemini_data(city_data):
 
     if not city_data:
-
         return "No dashboard data available."
 
     if isinstance(city_data, dict):
@@ -314,7 +328,7 @@ def _prepare_gemini_data(city_data):
 
         for key, value in city_data.items():
 
-            # Do not send the complete hourly dataframe
+            # Don't send the complete hourly dataframe
             # to Gemini.
 
             if key == "hourly":
@@ -380,8 +394,8 @@ assistant for Pakistan.
 Explain air pollution and environmental
 topics in simple language.
 
-Use the dashboard information provided
-below when answering.
+Use the real dashboard information
+provided below.
 
 Do not invent pollution measurements.
 
@@ -430,22 +444,26 @@ Give a concise, clear and useful answer.
     # CURRENT GEMINI MODEL
     # --------------------------------------------------------
 
-    model_name = "gemini-2.5-flash"
+    model_name = "gemini-3.6-flash"
 
     # --------------------------------------------------------
-    # SEND REQUEST
+    # CURRENT INTERACTIONS API
     # --------------------------------------------------------
 
     try:
 
-        response = client.models.generate_content(
+        interaction = client.interactions.create(
             model=model_name,
-            contents=prompt,
+            input=prompt,
         )
 
+        # ----------------------------------------------------
+        # GET RESPONSE
+        # ----------------------------------------------------
+
         text = getattr(
-            response,
-            "text",
+            interaction,
+            "output_text",
             None
         )
 
@@ -453,25 +471,126 @@ Give a concise, clear and useful answer.
 
             return text.strip()
 
+        # ----------------------------------------------------
+        # FALLBACK RESPONSE EXTRACTION
+        # ----------------------------------------------------
+
+        outputs = getattr(
+            interaction,
+            "outputs",
+            None
+        )
+
+        if outputs:
+
+            for output in outputs:
+
+                output_text = getattr(
+                    output,
+                    "text",
+                    None
+                )
+
+                if output_text:
+
+                    return output_text.strip()
+
+                content = getattr(
+                    output,
+                    "content",
+                    None
+                )
+
+                if content:
+
+                    for item in content:
+
+                        item_text = getattr(
+                            item,
+                            "text",
+                            None
+                        )
+
+                        if item_text:
+
+                            return item_text.strip()
+
         return (
             "⚠️ Gemini returned an empty response.\n\n"
-            "The PakEco pollution dashboard "
+            "Real-time pollution dashboard "
             "is still working."
         )
 
     # --------------------------------------------------------
-    # GEMINI ERROR
+    # RATE LIMIT / FREE TIER
     # --------------------------------------------------------
 
     except Exception as exc:
 
         error_text = str(exc)
 
+        error_upper = error_text.upper()
+
+        if (
+            "429" in error_text
+            or "RESOURCE_EXHAUSTED" in error_upper
+            or "RATE_LIMIT" in error_upper
+        ):
+
+            return (
+                "⚠️ Gemini free-tier limit reached.\n\n"
+                "Please wait and try again later.\n\n"
+                "Your real-time pollution dashboard "
+                "is still working."
+            )
+
+        # ----------------------------------------------------
+        # MODEL NOT FOUND
+        # ----------------------------------------------------
+
+        if (
+            "404" in error_text
+            or "NOT_FOUND" in error_upper
+        ):
+
+            return (
+                "⚠️ Gemini model is not available "
+                "for this API key.\n\n"
+                "Model requested: "
+                f"{model_name}\n\n"
+                "Your real-time pollution dashboard "
+                "is still working."
+            )
+
+        # ----------------------------------------------------
+        # AUTHENTICATION ERROR
+        # ----------------------------------------------------
+
+        if (
+            "401" in error_text
+            or "403" in error_text
+            or "PERMISSION_DENIED" in error_upper
+            or "UNAUTHENTICATED" in error_upper
+        ):
+
+            return (
+                "❌ Gemini API authentication failed.\n\n"
+                "Please check your GEMINI_API_KEY "
+                "in Streamlit Secrets.\n\n"
+                "Your pollution dashboard "
+                "is still working."
+            )
+
+        # ----------------------------------------------------
+        # OTHER ERROR
+        # ----------------------------------------------------
+
         return (
             "⚠️ Gemini is temporarily unavailable.\n\n"
             "Real-time pollution dashboard "
             "is still working.\n\n"
-            f"Gemini error:\n{error_text}"
+            "Gemini error:\n"
+            f"{error_text}"
         )
 
 
@@ -498,4 +617,4 @@ def backend_status():
         "open_meteo_air_quality": AQ_URL,
 
         "open_meteo_weather": WEATHER_URL,
-    }           
+        }
