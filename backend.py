@@ -1,436 +1,775 @@
-    import os
+    """
+PakEco AI Backend
 
-import streamlit as st
-import plotly.express as px
+- Open-Meteo Air Quality API
+- Open-Meteo Weather API
+- Gemini Environmental Assistant
+- City comparison
+- Shared backend logic for Streamlit / Gradio
+"""
 
+import os
+from datetime import datetime, timezone
 
-# ============================================================
-# STREAMLIT CONFIG
-# ============================================================
-
-st.set_page_config(
-    page_title="PakEco AI",
-    page_icon="🌍",
-    layout="wide",
-)
-
-
-# ============================================================
-# LOAD GEMINI API KEY FROM STREAMLIT SECRETS
-# ============================================================
-
-if "GEMINI_API_KEY" in st.secrets:
-    os.environ["GEMINI_API_KEY"] = st.secrets["GEMINI_API_KEY"]
+import pandas as pd
+import requests
 
 
 # ============================================================
-# BACKEND IMPORTS
+# PAKISTAN CITIES
 # ============================================================
 
-from backend import (
-    CITIES,
-    aqi_label,
-    fetch_city,
-    compare_cities,
-    gemini_answer,
-)
-
-
-# ============================================================
-# TITLE
-# ============================================================
-
-st.title("🌍 PakEco AI")
-
-st.subheader(
-    "Pakistan Environmental Pollution Monitoring & City Comparison"
-)
-
-st.info(
-    "Air-quality values are model-based Open-Meteo data. "
-    "They are not guaranteed official ground-station measurements."
-)
+CITIES = {
+    "Karachi": (24.8607, 67.0011),
+    "Lahore": (31.5204, 74.3587),
+    "Islamabad": (33.6844, 73.0479),
+    "Peshawar": (34.0151, 71.5249),
+    "Quetta": (30.1798, 66.9750),
+    "Multan": (30.1575, 71.5249),
+    "Faisalabad": (31.4504, 73.1350),
+    "Rawalpindi": (33.5651, 73.0169),
+    "Hyderabad": (25.3960, 68.3578),
+    "Gujranwala": (32.1877, 74.1945),
+}
 
 
 # ============================================================
-# SIDEBAR
+# API URLS
 # ============================================================
 
-with st.sidebar:
+AQ_URL = "https://air-quality-api.open-meteo.com/v1/air-quality"
 
-    st.header("⚙️ Controls")
+WEATHER_URL = "https://api.open-meteo.com/v1/forecast"
 
-    city = st.selectbox(
-        "Select city",
-        list(CITIES),
-    )
 
-    selected = st.multiselect(
-        "Compare cities",
-        list(CITIES),
-        default=[
-            "Karachi",
-            "Lahore",
-            "Islamabad",
-            "Peshawar",
-        ],
-    )
+# ============================================================
+# AQI LABEL
+# ============================================================
+
+def aqi_label(value):
+
+    if value is None:
+        return "Unavailable"
+
+    try:
+        if pd.isna(value):
+            return "Unavailable"
+
+        value = float(value)
+
+    except (TypeError, ValueError):
+        return "Unavailable"
+
+    if value <= 50:
+        return "Good"
+
+    if value <= 100:
+        return "Moderate"
+
+    if value <= 150:
+        return "Unhealthy for Sensitive Groups"
+
+    if value <= 200:
+        return "Unhealthy"
+
+    if value <= 300:
+        return "Very Unhealthy"
+
+    return "Hazardous"
+
+
+# ============================================================
+# FETCH CITY DATA
+# ============================================================
+
+def fetch_city(city: str):
+
+    if city not in CITIES:
+        raise ValueError(
+            f"Unknown city: {city}"
+        )
+
+    latitude, longitude = CITIES[city]
 
     # --------------------------------------------------------
-    # GEMINI STATUS
+    # AIR QUALITY
     # --------------------------------------------------------
 
-    st.markdown("---")
-    st.subheader("🤖 Gemini Status")
-
-    if "GEMINI_API_KEY" in st.secrets:
-
-        st.success(
-            "Gemini API key detected"
-        )
-
-    else:
-
-        st.error(
-            "Gemini API key not found"
-        )
-
-        st.caption(
-            "Add GEMINI_API_KEY in "
-            "Streamlit → Settings → Secrets."
-        )
-
-
-# ============================================================
-# FETCH SELECTED CITY
-# ============================================================
-
-try:
-
-    data = fetch_city(city)
-
-except Exception as exc:
-
-    st.error(
-        f"❌ Could not retrieve data: {exc}"
-    )
-
-    st.stop()
-
-
-# ============================================================
-# CURRENT AIR QUALITY METRICS
-# ============================================================
-
-c1, c2, c3, c4 = st.columns(4)
-
-
-if data["us_aqi"] is None:
-
-    c1.metric(
-        "US AQI",
-        "—"
-    )
-
-else:
-
-    c1.metric(
-        "US AQI",
-        round(data["us_aqi"])
-    )
-
-
-if data["pm25"] is None:
-
-    c2.metric(
-        "PM2.5",
-        "—"
-    )
-
-else:
-
-    c2.metric(
-        "PM2.5",
-        f'{data["pm25"]:.1f} µg/m³'
-    )
-
-
-if data["pm10"] is None:
-
-    c3.metric(
-        "PM10",
-        "—"
-    )
-
-else:
-
-    c3.metric(
-        "PM10",
-        f'{data["pm10"]:.1f} µg/m³'
-    )
-
-
-if data["temperature"] is None:
-
-    c4.metric(
-        "Temperature",
-        "—"
-    )
-
-else:
-
-    c4.metric(
-        "Temperature",
-        f'{data["temperature"]:.1f} °C'
-    )
-
-
-# ============================================================
-# AQI CATEGORY
-# ============================================================
-
-st.caption(
-    f"AQI category: **{aqi_label(data['us_aqi'])}** "
-    f"· Retrieved: {data['retrieved_at']}"
-)
-
-
-# ============================================================
-# WEATHER INFORMATION
-# ============================================================
-
-w1, w2, w3 = st.columns(3)
-
-
-if data["humidity"] is None:
-
-    w1.metric(
-        "Humidity",
-        "—"
-    )
-
-else:
-
-    w1.metric(
-        "Humidity",
-        f'{data["humidity"]:.0f}%'
-    )
-
-
-if data["wind"] is None:
-
-    w2.metric(
-        "Wind",
-        "—"
-    )
-
-else:
-
-    w2.metric(
-        "Wind",
-        f'{data["wind"]:.1f} km/h'
-    )
-
-
-w3.metric(
-    "City",
-    city
-)
-
-
-# ============================================================
-# HOURLY TREND
-# ============================================================
-
-st.markdown(
-    "### 📈 Hourly Pollution Trend"
-)
-
-
-if data["hourly"].empty:
-
-    st.warning(
-        "Hourly pollution data is unavailable."
-    )
-
-else:
-
-    fig = px.line(
-        data["hourly"],
-        x="time",
-        y=[
-            "PM2.5 (µg/m³)",
-            "PM10 (µg/m³)"
-        ],
-        markers=True,
-        title=f"{city} Particulate Matter",
-    )
-
-    st.plotly_chart(
-        fig,
-        use_container_width=True,
-    )
-
-
-# ============================================================
-# CITY COMPARISON
-# ============================================================
-
-st.markdown(
-    "### 🏙️ Pakistan City Comparison"
-)
-
-
-if not selected:
-
-    selected = [city]
-
-
-df, errors = compare_cities(
-    selected
-)
-
-
-if not df.empty:
-
-    st.dataframe(
-        df,
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    fig2 = px.bar(
-        df.sort_values(
-            "US AQI",
-            ascending=False
+    aq_params = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "current": (
+            "pm2_5,pm10,us_aqi,european_aqi"
         ),
-        x="City",
-        y="US AQI",
-        text="US AQI",
-        title="US AQI Comparison",
+        "hourly": (
+            "pm2_5,pm10,us_aqi,european_aqi"
+        ),
+        "forecast_days": 2,
+        "timezone": "auto",
+    }
+
+    try:
+
+        response = requests.get(
+            AQ_URL,
+            params=aq_params,
+            timeout=30,
+        )
+
+        response.raise_for_status()
+
+        aq_data = response.json()
+
+    except requests.exceptions.Timeout as exc:
+
+        raise RuntimeError(
+            "Open-Meteo air-quality request timed out."
+        ) from exc
+
+    except requests.exceptions.RequestException as exc:
+
+        raise RuntimeError(
+            f"Open-Meteo air-quality request failed: {exc}"
+        ) from exc
+
+    # --------------------------------------------------------
+    # WEATHER
+    # --------------------------------------------------------
+
+    weather_params = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "current": (
+            "temperature_2m,"
+            "relative_humidity_2m,"
+            "wind_speed_10m"
+        ),
+        "timezone": "auto",
+    }
+
+    try:
+
+        weather_response = requests.get(
+            WEATHER_URL,
+            params=weather_params,
+            timeout=30,
+        )
+
+        weather_response.raise_for_status()
+
+        weather_data = weather_response.json()
+
+    except requests.exceptions.Timeout as exc:
+
+        raise RuntimeError(
+            "Open-Meteo weather request timed out."
+        ) from exc
+
+    except requests.exceptions.RequestException as exc:
+
+        raise RuntimeError(
+            f"Open-Meteo weather request failed: {exc}"
+        ) from exc
+
+    # --------------------------------------------------------
+    # CURRENT DATA
+    # --------------------------------------------------------
+
+    current = aq_data.get(
+        "current",
+        {}
+    ) or {}
+
+    weather_current = weather_data.get(
+        "current",
+        {}
+    ) or {}
+
+    hourly = aq_data.get(
+        "hourly",
+        {}
+    ) or {}
+
+    # --------------------------------------------------------
+    # HOURLY DATAFRAME
+    # --------------------------------------------------------
+
+    frame = pd.DataFrame(
+        {
+            "time": hourly.get(
+                "time",
+                []
+            ),
+
+            "PM2.5 (µg/m³)": hourly.get(
+                "pm2_5",
+                []
+            ),
+
+            "PM10 (µg/m³)": hourly.get(
+                "pm10",
+                []
+            ),
+
+            "US AQI": hourly.get(
+                "us_aqi",
+                []
+            ),
+
+            "European AQI": hourly.get(
+                "european_aqi",
+                []
+            ),
+        }
     )
 
-    st.plotly_chart(
-        fig2,
-        use_container_width=True,
+    # --------------------------------------------------------
+    # RETURN CITY DATA
+    # --------------------------------------------------------
+
+    return {
+        "city": city,
+
+        "latitude": latitude,
+
+        "longitude": longitude,
+
+        "pm25": current.get(
+            "pm2_5"
+        ),
+
+        "pm10": current.get(
+            "pm10"
+        ),
+
+        "us_aqi": current.get(
+            "us_aqi"
+        ),
+
+        "eu_aqi": current.get(
+            "european_aqi"
+        ),
+
+        "temperature": weather_current.get(
+            "temperature_2m"
+        ),
+
+        "humidity": weather_current.get(
+            "relative_humidity_2m"
+        ),
+
+        "wind": weather_current.get(
+            "wind_speed_10m"
+        ),
+
+        "timezone": aq_data.get(
+            "timezone",
+            ""
+        ),
+
+        "hourly": frame,
+
+        "retrieved_at": datetime.now(
+            timezone.utc
+        ).strftime(
+            "%Y-%m-%d %H:%M UTC"
+        ),
+    }
+
+
+# ============================================================
+# COMPARE CITIES
+# ============================================================
+
+def compare_cities(cities):
+
+    rows = []
+
+    errors = []
+
+    for city in cities:
+
+        try:
+
+            data = fetch_city(city)
+
+            rows.append(
+                {
+                    "City": city,
+
+                    "US AQI": data["us_aqi"],
+
+                    "PM2.5 (µg/m³)": data[
+                        "pm25"
+                    ],
+
+                    "PM10 (µg/m³)": data[
+                        "pm10"
+                    ],
+
+                    "Temperature (°C)": data[
+                        "temperature"
+                    ],
+
+                    "Humidity (%)": data[
+                        "humidity"
+                    ],
+
+                    "Wind (km/h)": data[
+                        "wind"
+                    ],
+
+                    "AQI Category": aqi_label(
+                        data["us_aqi"]
+                    ),
+                }
+            )
+
+        except Exception as exc:
+
+            errors.append(
+                f"{city}: "
+                f"{type(exc).__name__}: "
+                f"{str(exc)}"
+            )
+
+    return (
+        pd.DataFrame(rows),
+        errors,
     )
 
-else:
 
-    st.warning(
-        "No city comparison data is currently available."
-    )
+# ============================================================
+# PREPARE GEMINI DATA
+# ============================================================
 
+def _prepare_gemini_data(city_data):
 
-if errors:
+    if city_data is None:
 
-    with st.expander(
-        "⚠️ City data errors"
+        return (
+            "No dashboard data is available."
+        )
+
+    if isinstance(
+        city_data,
+        dict
     ):
 
-        for error in errors:
+        clean_data = {}
 
-            st.write(error)
+        for key, value in city_data.items():
+
+            # Do not send the complete hourly
+            # dataframe to Gemini.
+
+            if key == "hourly":
+                continue
+
+            if isinstance(
+                value,
+                (
+                    str,
+                    int,
+                    float,
+                    bool,
+                ),
+            ):
+
+                clean_data[key] = value
+
+            elif value is None:
+
+                clean_data[key] = None
+
+            else:
+
+                clean_data[key] = str(
+                    value
+                )
+
+        return str(clean_data)
+
+    return str(city_data)
 
 
 # ============================================================
 # GEMINI ENVIRONMENTAL ASSISTANT
 # ============================================================
 
-st.markdown(
-    "### 🤖 Gemini Environmental Assistant"
-)
-
-
-question = st.text_area(
-    "Ask a question",
-    placeholder=(
-        "Example: Why is PM2.5 important?"
-    ),
-)
-
-
-if st.button(
-    "🤖 Ask Gemini",
-    type="primary",
+def gemini_answer(
+    question,
+    city_data
 ):
 
-    if not question.strip():
+    # --------------------------------------------------------
+    # CHECK API KEY
+    # --------------------------------------------------------
 
-        st.warning(
-            "Please enter a question first."
+    api_key = os.getenv(
+        "GEMINI_API_KEY"
+    )
+
+    if not api_key:
+
+        return (
+            "❌ Gemini API key is not configured.\n\n"
+            "Please add GEMINI_API_KEY to "
+            "Streamlit Secrets.\n\n"
+            "The PakEco pollution dashboard "
+            "is still working."
         )
 
-    elif "GEMINI_API_KEY" not in st.secrets:
+    # --------------------------------------------------------
+    # CHECK QUESTION
+    # --------------------------------------------------------
 
-        st.error(
-            "❌ Gemini API key is missing. "
-            "Add GEMINI_API_KEY to Streamlit Secrets."
+    if question is None:
+
+        return (
+            "Please enter an environmental question."
         )
 
-    else:
+    question = str(
+        question
+    ).strip()
 
-        # ----------------------------------------------------
-        # DASHBOARD CONTEXT
-        # ----------------------------------------------------
+    if not question:
 
-        context = {
-            "city": city,
+        return (
+            "Please enter an environmental question."
+        )
 
-            "US AQI": data["us_aqi"],
+    # --------------------------------------------------------
+    # DASHBOARD DATA
+    # --------------------------------------------------------
 
-            "AQI category": aqi_label(
-                data["us_aqi"]
-            ),
+    dashboard = _prepare_gemini_data(
+        city_data
+    )
 
-            "PM2.5": data["pm25"],
+    # --------------------------------------------------------
+    # GEMINI PROMPT
+    # --------------------------------------------------------
 
-            "PM10": data["pm10"],
+    prompt = f"""
+You are PakEco AI, an environmental information
+assistant for Pakistan.
 
-            "temperature": data[
-                "temperature"
-            ],
+Your job is to explain air pollution and
+environmental information in a simple,
+practical way.
 
-            "humidity": data[
-                "humidity"
-            ],
+IMPORTANT RULES:
 
-            "wind": data[
-                "wind"
-            ],
-        }
+1. Use the supplied dashboard values as the
+   only factual pollution measurements.
 
+2. Never invent PM2.5, PM10, AQI, temperature,
+   humidity, or wind measurements.
 
-        # ----------------------------------------------------
-        # ASK GEMINI
-        # ----------------------------------------------------
+3. Explain that Open-Meteo air-quality values
+   are model-based estimates and may differ
+   from ground-station observations.
 
-        with st.spinner(
-            "🤖 PakEco AI is thinking..."
-        ):
+4. Do not diagnose diseases or medical conditions.
 
-            answer = gemini_answer(
-                question,
-                context,
+5. If the user asks about health effects,
+   provide general educational information.
+
+6. If dashboard data is unavailable,
+   clearly say so.
+
+7. Give short, practical answers suitable
+   for a general Pakistani audience.
+
+8. You may recommend general pollution-reduction
+   measures and following local public-health
+   guidance.
+
+CURRENT PAK-ECO DASHBOARD:
+
+{dashboard}
+
+USER QUESTION:
+
+{question}
+
+Answer clearly and briefly.
+"""
+
+    # --------------------------------------------------------
+    # IMPORT GEMINI
+    # --------------------------------------------------------
+
+    try:
+
+        from google import genai
+
+    except ImportError:
+
+        return (
+            "❌ Gemini library is not installed.\n\n"
+            "Add this package to requirements.txt:\n\n"
+            "google-genai"
+        )
+
+    # --------------------------------------------------------
+    # CREATE GEMINI CLIENT
+    # --------------------------------------------------------
+
+    try:
+
+        client = genai.Client(
+            api_key=api_key
+        )
+
+    except Exception as exc:
+
+        return (
+            "❌ Gemini client could not be initialized.\n\n"
+            f"Technical error: "
+            f"{type(exc).__name__}: {str(exc)}"
+        )
+
+    # --------------------------------------------------------
+    # GEMINI MODEL FALLBACK
+    # --------------------------------------------------------
+
+    models = [
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-2.5-flash-lite",
+    ]
+
+    errors = []
+
+    # --------------------------------------------------------
+    # TRY GEMINI MODELS
+    # --------------------------------------------------------
+
+    for model_name in models:
+
+        try:
+
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
             )
 
+            # ------------------------------------------------
+            # NORMAL RESPONSE
+            # ------------------------------------------------
 
-        st.markdown(
-            "#### 🤖 PakEco AI"
+            text = getattr(
+                response,
+                "text",
+                None
+            )
+
+            if text:
+
+                return text.strip()
+
+            # ------------------------------------------------
+            # CANDIDATE RESPONSE FALLBACK
+            # ------------------------------------------------
+
+            candidates = getattr(
+                response,
+                "candidates",
+                None
+            )
+
+            if candidates:
+
+                try:
+
+                    text_parts = []
+
+                    for candidate in candidates:
+
+                        content = getattr(
+                            candidate,
+                            "content",
+                            None
+                        )
+
+                        if content is None:
+                            continue
+
+                        parts = getattr(
+                            content,
+                            "parts",
+                            []
+                        )
+
+                        for part in parts:
+
+                            part_text = getattr(
+                                part,
+                                "text",
+                                None
+                            )
+
+                            if part_text:
+
+                                text_parts.append(
+                                    part_text
+                                )
+
+                    if text_parts:
+
+                        return "\n".join(
+                            text_parts
+                        ).strip()
+
+                except Exception:
+                    pass
+
+            errors.append(
+                f"{model_name}: empty response"
+            )
+
+        # ----------------------------------------------------
+        # GEMINI ERROR
+        # ----------------------------------------------------
+
+        except Exception as exc:
+
+            error_text = str(
+                exc
+            ).lower()
+
+            error_type = type(
+                exc
+            ).__name__
+
+            # IMPORTANT:
+            # Keep the REAL error message so
+            # we can diagnose the problem.
+
+            errors.append(
+                f"{model_name}: "
+                f"{error_type}: "
+                f"{str(exc)}"
+            )
+
+            # ------------------------------------------------
+            # RATE LIMIT / QUOTA
+            # ------------------------------------------------
+
+            if any(
+                word in error_text
+                for word in [
+                    "429",
+                    "rate",
+                    "quota",
+                    "resource exhausted",
+                    "too many requests",
+                ]
+            ):
+
+                continue
+
+            # ------------------------------------------------
+            # SERVER / TEMPORARY ERROR
+            # ------------------------------------------------
+
+            if any(
+                word in error_text
+                for word in [
+                    "503",
+                    "unavailable",
+                    "overloaded",
+                    "500",
+                    "internal",
+                ]
+            ):
+
+                continue
+
+            # ------------------------------------------------
+            # MODEL NOT FOUND
+            # ------------------------------------------------
+
+            if any(
+                word in error_text
+                for word in [
+                    "404",
+                    "not found",
+                    "model",
+                    "unsupported",
+                ]
+            ):
+
+                continue
+
+            # ------------------------------------------------
+            # AUTHENTICATION
+            # ------------------------------------------------
+
+            if any(
+                word in error_text
+                for word in [
+                    "401",
+                    "403",
+                    "api key",
+                    "authentication",
+                    "permission",
+                    "unauthorized",
+                ]
+            ):
+
+                return (
+                    "❌ Gemini authentication failed.\n\n"
+                    "Please check your "
+                    "GEMINI_API_KEY in "
+                    "Streamlit Secrets.\n\n"
+                    f"Technical error:\n"
+                    f"{type(exc).__name__}: {str(exc)}\n\n"
+                    "Your PakEco pollution dashboard "
+                    "is still available."
+                )
+
+            continue
+
+    # ========================================================
+    # FINAL DEBUG ERROR
+    # ========================================================
+
+    return (
+        "⚠️ Gemini is temporarily unavailable.\n\n"
+        "Your PakEco pollution dashboard is still working.\n\n"
+        "Gemini errors detected:\n\n"
+        + "\n".join(errors)
+    )
+
+
+# ============================================================
+# BACKEND STATUS
+# ============================================================
+
+def backend_status():
+
+    gemini_configured = bool(
+        os.getenv(
+            "GEMINI_API_KEY"
         )
+    )
 
-        st.write(answer)
+    return {
+        "pakeco_backend": "OK",
 
+        "gemini_configured": (
+            gemini_configured
+        ),
 
-# ============================================================
-# FOOTER
-# ============================================================
+        "cities_available": len(
+            CITIES
+        ),
 
-st.markdown("---")
+        "open_meteo_air_quality": AQ_URL,
 
-st.caption(
-    "Data: Open-Meteo Air Quality and Weather APIs. "
-    "Air-quality data are based on atmospheric-composition "
-    "forecasts and may differ from ground-station observations. "
-    "See README/PRD for limitations and attribution."
-)
+        "open_meteo_weather": WEATHER_URL,
+                }
